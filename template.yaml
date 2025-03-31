@@ -2,13 +2,25 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 
 Description: |
-  ToDo application backend with AWS Lambda, API Gateway, and DynamoDB
+  ToDo application backend with AWS Lambda, API Gateway, DynamoDB,
+  and ECS integration via VPC Link with proxy+.
 
 Globals:
   Function:
     Runtime: python3.9
     MemorySize: 128
     Timeout: 10
+
+Parameters:
+  # CDK でデプロイした ECS の NLB の DNS 名
+  NlbDnsName:
+    Type: String
+    Description: "DNS name of the ECS service's NLB"
+
+  # CDK でデプロイした ECS の NLB の ARN
+  NlbArn:
+    Type: String
+    Description: "ARN of the ECS service's NLB"
 
 Resources:
 
@@ -99,8 +111,50 @@ Resources:
             Path: /todo/{id}
             Method: delete
 
+  # VPCリンク作成: NLB の ARN をターゲットとする
+  EcsVpcLink:
+    Type: AWS::ApiGateway::VpcLink
+    Properties:
+      Name: EcsVpcLink
+      TargetArns:
+        - !Ref NlbArn
+
+  # ECS 統合用 API を追加（proxy+ を利用）
+  EcsApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      DefinitionBody:
+        openapi: "3.0.1"
+        info:
+          title: "ECS Proxy API"
+          version: "1.0"
+        paths:
+          /{proxy+}:
+            x-amazon-apigateway-any-method:
+              parameters:
+                - name: proxy
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+              x-amazon-apigateway-integration:
+                uri: !Sub "http://${NlbDnsName}/{proxy}"
+                httpMethod: ANY
+                type: http_proxy
+                connectionType: VPC_LINK
+                connectionId: !Ref EcsVpcLink
+                requestParameters:
+                  integration.request.path.proxy: method.request.path.proxy
+                passthroughBehavior: when_no_match
+                timeoutInMillis: 29000
+
 Outputs:
   ApiEndpoint:
-    Description: "API Gateway endpoint URL"
+    Description: "API Gateway endpoint URL for Lambda functions"
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+
+  EcsApiEndpoint:
+    Description: "API Gateway endpoint URL for ECS integration via VPC Link"
+    Value: !Sub "https://${EcsApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
 
